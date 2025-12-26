@@ -1,0 +1,219 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import pandas as pd
+from datetime import timedelta
+import holidays
+import numpy as np
+import os
+
+class ConciliadorSistema:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Conciliador V3.0 - Com Configuração de Colunas")
+        self.root.geometry("700x600")
+        
+        # Variáveis de arquivo
+        self.path_antigo = tk.StringVar()
+        self.path_novo = tk.StringVar()
+        
+        # Variáveis de Colunas (Configuração) - Valores Padrão
+        self.col_id_var = tk.StringVar(value="id_transacao")
+        self.col_data_antigo_var = tk.StringVar(value="data_vencimento")
+        self.col_valor_antigo_var = tk.StringVar(value="valor")
+        
+        self.col_data_novo_var = tk.StringVar(value="data_pagamento")
+        self.col_valor_novo_var = tk.StringVar(value="valor")
+
+        # Calendário de Feriados (Brasil + MG)
+        self.feriados_br = holidays.BR(subdiv='MG') 
+
+        self._montar_interface()
+
+    def _montar_interface(self):
+        # Frame Principal com Scrollbar (caso a tela fique pequena)
+        main_frame = tk.Frame(self.root, padx=20, pady=10)
+        main_frame.pack(expand=True, fill='both')
+
+        # Título
+        lbl_title = tk.Label(main_frame, text="Validação de Migração Financeira", font=("Arial", 14, "bold"))
+        lbl_title.pack(pady=(0, 15))
+
+        # --- SEÇÃO 1: ARQUIVOS ---
+        lbl_sec1 = tk.Label(main_frame, text="1. Seleção de Arquivos", font=("Arial", 10, "bold"), anchor="w")
+        lbl_sec1.pack(fill='x')
+        
+        # Arquivo Antigo
+        tk.Label(main_frame, text="Planilha Sistema ANTIGO:", anchor='w', fg="#555").pack(fill='x')
+        frame_antigo = tk.Frame(main_frame)
+        frame_antigo.pack(fill='x', pady=2)
+        tk.Entry(frame_antigo, textvariable=self.path_antigo, width=50).pack(side='left', padx=(0, 5))
+        tk.Button(frame_antigo, text="Buscar", command=lambda: self._buscar_arquivo(self.path_antigo)).pack(side='left')
+
+        # Arquivo Novo
+        tk.Label(main_frame, text="Planilha Sistema NOVO:", anchor='w', fg="#555").pack(fill='x')
+        frame_novo = tk.Frame(main_frame)
+        frame_novo.pack(fill='x', pady=2)
+        tk.Entry(frame_novo, textvariable=self.path_novo, width=50).pack(side='left', padx=(0, 5))
+        tk.Button(frame_novo, text="Buscar", command=lambda: self._buscar_arquivo(self.path_novo)).pack(side='left')
+
+        tk.Frame(main_frame, height=2, bd=1, relief="sunken").pack(fill='x', pady=15)
+
+        # --- SEÇÃO 2: MAPEAMENTO DE COLUNAS ---
+        lbl_sec2 = tk.Label(main_frame, text="2. Nomes das Colunas (Igual ao Excel)", font=("Arial", 10, "bold"), anchor="w")
+        lbl_sec2.pack(fill='x', pady=(0, 5))
+
+        grid_frame = tk.Frame(main_frame)
+        grid_frame.pack(fill='x')
+
+        # Configurações
+        tk.Label(grid_frame, text="Nome da Coluna ID (Chave):").grid(row=0, column=0, sticky='w')
+        tk.Entry(grid_frame, textvariable=self.col_id_var, width=20).grid(row=0, column=1, padx=10, pady=2)
+
+        tk.Label(grid_frame, text="Coluna DATA (Antigo):").grid(row=1, column=0, sticky='w')
+        tk.Entry(grid_frame, textvariable=self.col_data_antigo_var, width=20).grid(row=1, column=1, padx=10, pady=2)
+
+        tk.Label(grid_frame, text="Coluna VALOR (Antigo):").grid(row=2, column=0, sticky='w')
+        tk.Entry(grid_frame, textvariable=self.col_valor_antigo_var, width=20).grid(row=2, column=1, padx=10, pady=2)
+
+        tk.Label(grid_frame, text="Coluna DATA (Novo):").grid(row=1, column=2, sticky='w', padx=(20, 0))
+        tk.Entry(grid_frame, textvariable=self.col_data_novo_var, width=20).grid(row=1, column=3, padx=10, pady=2)
+        
+        tk.Label(grid_frame, text="Coluna VALOR (Novo):").grid(row=2, column=2, sticky='w', padx=(20, 0))
+        tk.Entry(grid_frame, textvariable=self.col_valor_novo_var, width=20).grid(row=2, column=3, padx=10, pady=2)
+
+        tk.Label(grid_frame, text="(Dica: Diferencia maiúsculas de minúsculas!)", fg="red", font=("Arial", 8)).grid(row=3, column=0, columnspan=4, pady=5)
+
+        # --- Botão de Ação ---
+        btn_processar = tk.Button(main_frame, text="PROCESSAR CONCILIAÇÃO", 
+                                  bg="#4CAF50", fg="white", font=("Arial", 10, "bold"),
+                                  command=self.processar_dados)
+        btn_processar.pack(pady=20, fill='x')
+
+        # --- Log de Status ---
+        self.txt_log = tk.Text(main_frame, height=8, bg="#f0f0f0", font=("Consolas", 8))
+        self.txt_log.pack(fill='both', expand=True)
+        self.log("Pronto. Verifique se os nomes das colunas acima batem com seu Excel.")
+
+    def _buscar_arquivo(self, var_storage):
+        filename = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls"), ("CSV files", "*.csv")])
+        if filename:
+            var_storage.set(filename)
+            self.log(f"Selecionado: {os.path.basename(filename)}")
+
+    def log(self, mensagem):
+        self.txt_log.insert(tk.END, f"> {mensagem}\n")
+        self.txt_log.see(tk.END)
+        self.root.update_idletasks()
+
+    def proximo_dia_util(self, data):
+        if pd.isnull(data): return data
+        while True:
+            if data.weekday() >= 5 or data in self.feriados_br:
+                data += timedelta(days=1)
+                continue
+            break
+        return data
+
+    def processar_dados(self):
+        arquivo_antigo = self.path_antigo.get()
+        arquivo_novo = self.path_novo.get()
+        
+        # Pegando nomes das colunas da interface
+        col_id = self.col_id_var.get().strip()
+        col_data_ant = self.col_data_antigo_var.get().strip()
+        col_val_ant = self.col_valor_antigo_var.get().strip()
+        col_data_nov = self.col_data_novo_var.get().strip()
+        col_val_nov = self.col_valor_novo_var.get().strip()
+
+        if not arquivo_antigo or not arquivo_novo:
+            messagebox.showwarning("Aviso", "Selecione os dois arquivos.")
+            return
+
+        try:
+            self.log("--- INICIANDO ---")
+            
+            # Leitura
+            df_antigo = pd.read_excel(arquivo_antigo) if arquivo_antigo.endswith('x') else pd.read_csv(arquivo_antigo)
+            df_novo = pd.read_excel(arquivo_novo) if arquivo_novo.endswith('x') else pd.read_csv(arquivo_novo)
+            
+            # --- DIAGNÓSTICO DE COLUNAS ---
+            # Remove espaços em branco extras nos nomes das colunas do Excel
+            df_antigo.columns = df_antigo.columns.str.strip()
+            df_novo.columns = df_novo.columns.str.strip()
+
+            # Verificação se as colunas existem
+            if col_id not in df_antigo.columns:
+                raise KeyError(f"Coluna ID '{col_id}' não encontrada no arquivo ANTIGO.\nColunas disponíveis: {list(df_antigo.columns)}")
+            if col_data_ant not in df_antigo.columns:
+                raise KeyError(f"Coluna Data '{col_data_ant}' não encontrada no arquivo ANTIGO.\nColunas disponíveis: {list(df_antigo.columns)}")
+            
+            self.log("Colunas encontradas. Convertendo datas...")
+
+            # Conversão
+            df_antigo[col_data_ant] = pd.to_datetime(df_antigo[col_data_ant], errors='coerce')
+            df_novo[col_data_nov] = pd.to_datetime(df_novo[col_data_nov], errors='coerce')
+
+            # Lógica de Negócio
+            self.log("Calculando datas esperadas...")
+            df_antigo['data_esperada'] = df_antigo[col_data_ant].apply(self.proximo_dia_util)
+
+            # Merge
+            self.log("Cruzando planilhas...")
+            df_final = pd.merge(df_antigo, df_novo, on=col_id, suffixes=('_antigo', '_novo'), how='outer')
+
+            # Timsort
+            df_final = df_final.sort_values(by=[col_id])
+
+            # Validação
+            # Nota: O merge pode renomear colunas iguais (ex: valor_x, valor_y). Vamos tratar isso.
+            # Se as colunas de valor tinham o mesmo nome nos dois arquivos, o pandas colocou sufixos.
+            
+            nome_val_ant_final = f"{col_val_ant}_antigo" if col_val_ant in df_novo.columns else col_val_ant
+            nome_val_nov_final = f"{col_val_nov}_novo" if col_val_nov in df_antigo.columns else col_val_nov
+
+            # Se o pandas usou _x e _y (padrão quando não definimos sufixos específicos no merge para colunas fora da chave)
+            # Mas definimos suffixes=('_antigo', '_novo'), então deve estar certo.
+            
+            # Ajuste caso o nome da coluna de valor seja diferente nos inputs, o merge mantém os originais
+            val_ant_real = col_val_ant if col_val_ant not in df_novo.columns else f"{col_val_ant}_antigo"
+            val_nov_real = col_val_nov if col_val_nov not in df_antigo.columns else f"{col_val_nov}_novo"
+            
+            # Verifica se as colunas resultantes existem, senão tenta adivinhar (fallback)
+            if val_ant_real not in df_final.columns: val_ant_real = col_val_ant
+            if val_nov_real not in df_final.columns: val_nov_real = col_val_nov
+
+            self.log("Verificando divergências...")
+            
+            df_final['status_valor'] = np.where(
+                np.isclose(df_final[val_ant_real].fillna(0), df_final[val_nov_real].fillna(0), atol=0.01),
+                'OK', 'ERRO'
+            )
+
+            df_final['status_data'] = np.where(
+                df_final['data_esperada'] == df_final[col_data_nov],
+                'OK', 'ERRO'
+            )
+
+            # Relatório
+            divergencias = df_final[(df_final['status_valor'] == 'ERRO') | (df_final['status_data'] == 'ERRO')]
+            output_file = "Relatorio_Conciliacao_V3.xlsx"
+            
+            with pd.ExcelWriter(output_file) as writer:
+                df_final.to_excel(writer, sheet_name='Geral', index=False)
+                if not divergencias.empty:
+                    divergencias.to_excel(writer, sheet_name='Divergencias', index=False)
+            
+            self.log(f"SUCESSO! {len(divergencias)} divergências.")
+            messagebox.showinfo("Sucesso", f"Relatório salvo como {output_file}")
+
+        except KeyError as ke:
+            self.log(f"ERRO DE COLUNA: {str(ke)}")
+            messagebox.showerror("Erro de Coluna", f"O nome da coluna está errado ou não existe no arquivo.\nVeja o log para detalhes.\n\nErro: {str(ke)}")
+        except Exception as e:
+            self.log(f"ERRO CRÍTICO: {str(e)}")
+            messagebox.showerror("Erro", str(e))
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ConciliadorSistema(root)
+    root.mainloop()
