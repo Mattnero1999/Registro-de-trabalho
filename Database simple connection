@@ -1,0 +1,129 @@
+import time
+import logging
+import requests
+import os
+from datetime import datetime
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+
+# --- 1. CARREGAR CONFIGURAÇÕES ---
+# Carrega as variáveis do arquivo .env
+load_dotenv()
+
+# Configuração de Logs
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [%(levelname)s] - %(message)s',
+    handlers=[
+        logging.FileHandler("servidor_dados.log"),
+        logging.StreamHandler()
+    ]
+)
+
+# Monta a string de conexão baseada no .env
+# Exemplo SQL Server: mssql+pyodbc://user:pass@host:port/dbname?driver=ODBC+Driver+17+for+SQL+Server
+DB_STR = f"{os.getenv('DB_DRIVER')}://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}?driver=ODBC+Driver+17+for+SQL+Server"
+
+HEADERS = {
+    "Authorization": f"Bearer {os.getenv('API_TOKEN')}",
+    "Content-Type": "application/json"
+}
+
+# --- 2. FUNÇÕES DO SISTEMA ---
+
+def get_engine():
+    """Cria a conexão com pool de conexões (ótimo para servidores)."""
+    try:
+        # pool_pre_ping=True evita erros de conexão caida (famoso 'gone away')
+        return create_engine(DB_STR, pool_pre_ping=True)
+    except Exception as e:
+        logging.critical(f"FATAL: Não foi possível configurar o banco: {e}")
+        exit(1)
+
+def buscar_novos_dados(endpoint, ultimo_id):
+    """Busca apenas dados incrementais."""
+    url = f"{os.getenv('API_URL')}/{endpoint}"
+    params = {"id_maior_que": ultimo_id, "limit": 500} # Aumentei o limite para servidor dedicado
+    
+    try:
+        r = requests.get(url, headers=HEADERS, params=params, timeout=20)
+        r.raise_for_status()
+        dados = r.json()
+        if dados:
+            logging.info(f"API {endpoint}: {len(dados)} novos registros encontrados.")
+        return dados
+    except Exception as e:
+        logging.error(f"Erro na API {endpoint}: {e}")
+        return []
+
+def salvar_lote(engine, tabela, lista_dados):
+    """
+    Realiza BULK INSERT (Inserção em massa) para alta performance.
+    Muito mais rápido que inserir um por um.
+    """
+    if not lista_dados:
+        return
+
+    try:
+        with engine.begin() as conn: # 'begin' inicia uma transação automática
+            # Prepara os dados. No mundo real, você deve garantir que as chaves do dict
+            # sejam iguais aos nomes das colunas no banco.
+            
+            # Adiciona timestamp de importação em cada registro
+            data_atual = datetime.now()
+            for item in lista_dados:
+                item['data_importacao'] = data_atual
+
+            # Exemplo de inserção eficiente via SQLAlchemy Core
+            # O SQLAlchemy monta um INSERT INTO ... VALUES (...), (...), (...) otimizado
+            conn.execute(
+                text(f"INSERT INTO {tabela} (campo1, campo2, valor, data_importacao) VALUES (:campo1, :campo2, :valor, :data_importacao)"),
+                lista_dados
+            )
+            
+        logging.info(f"DB: {len(lista_dados)} registros gravados em {tabela}.")
+        
+    except SQLAlchemyError as e:
+        logging.error(f"Erro de Banco de Dados ao salvar lote: {e}")
+        # Aqui você poderia implementar uma lógica de "retry" ou salvar em um arquivo de erro
+
+# --- 3. EXECUÇÃO CONTÍNUA (DAEMON) ---
+
+def main():
+    engine = get_engine()
+    
+    # Controle de Estado: Em servidor dedicado, o ideal é ler o último ID do próprio banco
+    # Ex: SELECT MAX(id_origem) FROM tb_orcamentos
+    # Por simplificação, iniciarei com 0, mas recomendo implementar essa busca inicial.
+    ultimo_id_orc = 0
+    ultimo_id_mov = 0
+    
+    logging.info(">>> SERVIDOR DE DADOS INICIADO <<<")
+
+    while True:
+        try:
+            # Ciclo Orcamentos
+            novos_orcs = buscar_novos_dados("orcamentos", ultimo_id_orc)
+            if novos_orcs:
+                salvar_lote(engine, "tb_orcamentos", novos_orcs)
+                ultimo_id_orc = novos_orcs[-1]['id']
+
+            # Ciclo Movimentações
+            novas_movs = buscar_novos_dados("movimentacoes", ultimo_id_mov)
+            if novas_movs:
+                salvar_lote(engine, "tb_movimentacoes", novas_movs)
+                ultimo_id_mov = novas_movs[-1]['id']
+
+            # Intervalo de polling
+            time.sleep(10) 
+
+        except KeyboardInterrupt:
+            logging.warning("Serviço interrompido manualmente.")
+            break
+        except Exception as e:
+            logging.critical(f"Erro não tratado no loop principal: {e}")
+            time.sleep(30) # Espera maior em caso de crash grave
+
+if __name__ == "__main__":
+    main()
