@@ -1,0 +1,78 @@
+import pandas as pd
+import numpy as np
+
+# 1. Simulação dos Dados (No seu caso, viria de pd.read_excel)
+dados_sistema = {
+    'autorizacao': ['1001', '1002', '1003', '1005'],
+    'nome_cliente': ['Empresa Alpha', 'Beta Ltda', 'Gama S.A.', 'Delta Comércio'],
+    'valor_previsto': [1500.00, 230.50, 5000.00, 120.00]
+}
+
+dados_banco = {
+    'id_transacao': ['1001', '1002', '1003', '1004'], # 1004 é extra, 1005 falta
+    'nome_pagador': ['Empresa Alpha', 'Beta Limitada', 'Gama SA', 'Desconhecido'],
+    'valor_real': [1500.00, 230.00, 5000.00, 90.00]
+}
+
+df_sys = pd.DataFrame(dados_sistema)
+df_banco = pd.DataFrame(dados_banco)
+
+# 2. Preparação (Garantir que a chave seja do mesmo tipo, ex: string)
+df_sys['autorizacao'] = df_sys['autorizacao'].astype(str)
+df_banco['id_transacao'] = df_banco['id_transacao'].astype(str)
+
+# 3. Associação (O "Merge")
+# 'how=outer' garante que pegamos dados que estão em apenas um dos lados também
+df_final = pd.merge(
+    df_sys, 
+    df_banco, 
+    left_on='autorizacao', 
+    right_on='id_transacao', 
+    how='outer',
+    indicator=True # Cria uma coluna dizendo se veio de um, de outro ou de ambos
+)
+
+# 4. Lógica de Conferência (Comparação)
+
+# Função para verificar status do valor
+def verificar_valor(row):
+    if row['_merge'] != 'both':
+        return 'Não Encontrado'
+    # Margem de tolerância para centavos (floating point issues)
+    if abs(row['valor_previsto'] - row['valor_real']) < 0.01:
+        return 'OK'
+    else:
+        return 'Divergência de Valor'
+
+# Aplicando a verificação
+df_final['status_valor'] = df_final.apply(verificar_valor, axis=1)
+df_final['diferenca'] = df_final['valor_previsto'] - df_final['valor_real']
+
+# 5. Tratamento de Nomes (Comparação Simples)
+# Se precisar de fuzzy match, avisaria aqui se a similaridade for < 100%
+df_final['nomes_iguais'] = np.where(
+    df_final['nome_cliente'] == df_final['nome_pagador'], 
+    'Sim', 
+    'Não'
+)
+
+# 6. Exportação para Excel com formatação condicional
+arquivo_saida = 'relatorio_conferencia.xlsx'
+writer = pd.ExcelWriter(arquivo_saida, engine='xlsxwriter')
+df_final.to_excel(writer, sheet_name='Conferencia', index=False)
+
+# Ajuste visual básico (opcional)
+workbook  = writer.book
+worksheet = writer.sheets['Conferencia']
+format_red = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+
+# Exemplo: Pintar de vermelho onde houver Divergência
+worksheet.conditional_format('G2:G100', {
+    'type': 'text',
+    'criteria': 'containing',
+    'value': 'Divergência',
+    'format': format_red
+})
+
+writer.close()
+print(f"Conferência finalizada. Arquivo '{arquivo_saida}' gerado.")
